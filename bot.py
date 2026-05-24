@@ -19,7 +19,7 @@ UPI_NAME = "Your Business Name"
 client = MongoClient(MONGO_URI)
 db = client["TelegramSaleBot"]
 users_col = db["users"]
-products_col = db["products"]  # Ek category ka ek hi product hoga
+products_col = db["products"]
 categories_col = db["categories"]
 recharge_reqs_col = db["recharge_requests"]
 
@@ -153,11 +153,11 @@ After payment, click 'I have paid'
         )
     
     elif data == "custom_amount":
-        await query.edit_message_text("💸 *Enter amount* (Min ₹10)\n\nSend a number like: 250\n\n🔙 Click /start to cancel", parse_mode="Markdown")
+        await query.edit_message_text("💸 *Enter amount* (Min ₹10)\n\nSend a number like: 250", parse_mode="Markdown")
         context.user_data["awaiting_custom_amount"] = True
     
     elif data == "paid_screenshot":
-        await query.edit_message_text("📸 *Please send payment screenshot*\n\n🔙 Click /start to cancel", parse_mode="Markdown")
+        await query.edit_message_text("📸 *Please send payment screenshot*", parse_mode="Markdown")
         context.user_data["awaiting_screenshot"] = True
     
     # ========== PRODUCTS - Category List ==========
@@ -169,19 +169,19 @@ After payment, click 'I have paid'
         
         keyboard = []
         for cat in cats:
-            # Get product for this category
             product = products_col.find_one({"category_id": cat["_id"]})
             if product:
                 stock = product.get('stock', 0)
+                price = product.get('price', 0)
                 stock_emoji = "✅" if stock > 0 else "❌"
-                keyboard.append([InlineKeyboardButton(f"📁 {cat['name']} - ₹{product['price']} {stock_emoji} ({stock} left)", callback_data=f"cat_{cat['_id']}")])
+                keyboard.append([InlineKeyboardButton(f"📁 {cat['name']} - ₹{price} {stock_emoji} ({stock} left)", callback_data=f"cat_{cat['_id']}")])
             else:
                 keyboard.append([InlineKeyboardButton(f"📁 {cat['name']} - No product", callback_data=f"cat_{cat['_id']}")])
         keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="main_menu")])
         
         await query.edit_message_text("🛍️ *Select Category*", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
     
-    # ========== PRODUCT DETAILS (Single product per category) ==========
+    # ========== PRODUCT DETAILS ==========
     elif data.startswith("cat_"):
         cat_id = data.split("_")[1]
         product = products_col.find_one({"category_id": ObjectId(cat_id)})
@@ -193,7 +193,6 @@ After payment, click 'I have paid'
         
         stock = product.get('stock', 0)
         price = product.get('price', 0)
-        product_info = product.get('product_info', 'No information')
         
         if stock <= 0:
             status = "❌ OUT OF STOCK"
@@ -203,17 +202,13 @@ After payment, click 'I have paid'
             buy_button = [[InlineKeyboardButton("🛒 BUY NOW", callback_data=f"buy_{product['_id']}")]]
         
         text = f"""
-📦 *{cat['name']} - {product['name']}*
+📦 *{cat['name']}*
 
 ━━━━━━━━━━━━━━━━━━━━━
 💰 *Price:* ₹{price}
 📊 *Status:* {status}
 ━━━━━━━━━━━━━━━━━━━━━
 
-📝 *Product Details:*
-{product_info}
-
-━━━━━━━━━━━━━━━━━━━━━
 💳 *Your Balance:* ₹{user['wallet']}
 """
         
@@ -230,15 +225,14 @@ After payment, click 'I have paid'
             await query.edit_message_text("❌ Product not found.", reply_markup=main_menu())
             return
         
-        stock = product.get('stock', 0)
+        stock_list = product.get('stock_list', [])
         price = product.get('price', 0)
         
-        if stock <= 0:
+        if len(stock_list) <= 0:
             await query.edit_message_text("❌ *Out of stock!*\n\nThis product is currently unavailable.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(back_button("products")))
             return
             
         if user["wallet"] >= price:
-            # Ask for confirmation
             keyboard = [
                 [InlineKeyboardButton("✅ YES, CONFIRM", callback_data=f"confirm_buy_{prod_id}")],
                 [InlineKeyboardButton("🔙 Cancel", callback_data="products")]
@@ -275,19 +269,24 @@ Please recharge your wallet first.
             await query.edit_message_text("❌ Product not found.", reply_markup=main_menu())
             return
         
-        stock = product.get('stock', 0)
+        stock_list = product.get('stock_list', [])
         price = product.get('price', 0)
         
-        if stock <= 0:
+        if len(stock_list) <= 0:
             await query.edit_message_text("❌ *Out of stock!*", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(back_button("products")))
             return
             
         if user["wallet"] >= price:
-            # Deduct stock and wallet
-            products_col.update_one({"_id": product["_id"]}, {"$inc": {"stock": -1}})
-            update_wallet(user_id, -price)
+            # Get first item from stock list
+            bought_item = stock_list[0]
+            new_stock_list = stock_list[1:]
             
-            product_info = product.get('product_info', 'No information provided')
+            # Update product
+            products_col.update_one(
+                {"_id": product["_id"]}, 
+                {"$set": {"stock_list": new_stock_list, "stock": len(new_stock_list)}}
+            )
+            update_wallet(user_id, -price)
             
             await query.edit_message_text(f"""
 ✅ *PURCHASE SUCCESSFUL!*
@@ -298,16 +297,16 @@ Please recharge your wallet first.
 💳 Remaining: ₹{user['wallet'] - price}
 ━━━━━━━━━━━━━━━━━━━━━
 
-🎉 *Here is your product:*
+🎉 *Here is your purchase:*
 
-{product_info}
+{bought_item}
 
 Thank you for shopping! 🙏
 """, parse_mode="Markdown", reply_markup=main_menu())
             
             # Notify admin
             for admin_id in ADMIN_IDS:
-                await context.bot.send_message(admin_id, f"🛒 *Purchase*\n\nUser: {user_id}\nProduct: {product['name']}\nAmount: ₹{price}\nStock left: {stock - 1}", parse_mode="Markdown")
+                await context.bot.send_message(admin_id, f"🛒 *Purchase*\n\nUser: {user_id}\nProduct: {product['name']}\nAmount: ₹{price}\nStock left: {len(new_stock_list)}", parse_mode="Markdown")
         else:
             need = price - user["wallet"]
             await query.edit_message_text(f"❌ *Insufficient balance!* Need ₹{need} more.", parse_mode="Markdown", reply_markup=main_menu())
@@ -322,21 +321,21 @@ Thank you for shopping! 🙏
             [InlineKeyboardButton("🗑️ Remove Category", callback_data="admin_remove_cat")],
             [InlineKeyboardButton("📦 Add/Edit Product", callback_data="admin_add_prod")],
             [InlineKeyboardButton("💰 Edit Price", callback_data="admin_edit_price")],
-            [InlineKeyboardButton("📊 Edit Stock", callback_data="admin_edit_stock")],
-            [InlineKeyboardButton("📝 Edit Product Info", callback_data="admin_edit_info")],
+            [InlineKeyboardButton("📊 Add Stock", callback_data="admin_add_stock")],
+            [InlineKeyboardButton("📋 View Stock", callback_data="admin_view_stock")],
             [InlineKeyboardButton("⏳ Pending Approvals", callback_data="admin_pending")],
             [InlineKeyboardButton("📈 Statistics", callback_data="admin_stats")],
             [InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")]
         ]
         await query.edit_message_text("🔧 *Admin Control Panel*", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
     
-    # ========== ADD CATEGORY (Step by step) ==========
+    # ========== ADD CATEGORY ==========
     elif data == "admin_add_cat":
         if user_id not in ADMIN_IDS:
             await query.edit_message_text("🔒 Unauthorized.")
             return
-        await query.edit_message_text("📁 *Step 1/2: Enter Category Name*\n\nExample: `Netflix Account`\n\n🔙 Click /admin to cancel", parse_mode="Markdown")
-        context.user_data["admin_action"] = "add_cat_name"
+        await query.edit_message_text("📁 *Send category name:*\n\nExample: `Netflix Account`", parse_mode="Markdown")
+        context.user_data["admin_action"] = "add_cat"
     
     # ========== REMOVE CATEGORY ==========
     elif data == "admin_remove_cat":
@@ -356,7 +355,7 @@ Thank you for shopping! 🙏
             keyboard.append([InlineKeyboardButton(f"🗑️ {cat['name']} - {product_name}", callback_data=f"remove_cat_{cat['_id']}")])
         keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="admin_panel")])
         
-        await query.edit_message_text("🗑️ *Select category to remove*\n\n⚠️ *Warning:* Product in this category will also be deleted!", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text("🗑️ *Select category to remove*\n\n⚠️ *Warning:* Product and all stock will be deleted!", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
     
     elif data.startswith("remove_cat_"):
         if user_id not in ADMIN_IDS:
@@ -366,16 +365,14 @@ Thank you for shopping! 🙏
         cat = categories_col.find_one({"_id": ObjectId(cat_id)})
         
         if cat:
-            # Delete product in this category
             products_col.delete_many({"category_id": ObjectId(cat_id)})
-            # Delete category
             categories_col.delete_one({"_id": ObjectId(cat_id)})
             
             await query.edit_message_text(f"✅ *Category Removed!*\n\n📁 Name: {cat['name']}\n\nCategory and its product have been deleted.", parse_mode="Markdown")
         else:
             await query.edit_message_text("❌ Category not found!", parse_mode="Markdown")
     
-    # ========== ADD/EDIT PRODUCT ==========
+    # ========== ADD/EDIT PRODUCT (Name & Price) ==========
     elif data == "admin_add_prod":
         if user_id not in ADMIN_IDS:
             await query.edit_message_text("🔒 Unauthorized.")
@@ -383,7 +380,7 @@ Thank you for shopping! 🙏
         
         cats = list(categories_col.find({}))
         if not cats:
-            await query.edit_message_text("❌ *No categories available!*\n\nPlease add a category first using 'Add Category' button.", parse_mode="Markdown")
+            await query.edit_message_text("❌ *No categories available!*\n\nPlease add a category first.", parse_mode="Markdown")
             return
         
         keyboard = []
@@ -393,7 +390,7 @@ Thank you for shopping! 🙏
             keyboard.append([InlineKeyboardButton(f"📁 {cat['name']} - {status}", callback_data=f"edit_prod_{cat['_id']}")])
         keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="admin_panel")])
         
-        await query.edit_message_text("📦 *Select category to add/edit product*\n\nEach category can have ONE product.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text("📦 *Select category to add/edit product*\n\nYou will set Product Name and Price only.\nStock will be added separately using 'Add Stock' button.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
     
     elif data.startswith("edit_prod_"):
         if user_id not in ADMIN_IDS:
@@ -403,42 +400,116 @@ Thank you for shopping! 🙏
         context.user_data["product_category_id"] = cat_id
         
         cat = categories_col.find_one({"_id": ObjectId(cat_id)})
-        existing_product = products_col.find_one({"category_id": ObjectId(cat_id)})
         
-        if existing_product:
-            await query.edit_message_text(f"""
-📦 *Editing product in category:* {cat['name']}
-
-*Current product:* {existing_product['name']}
-*Price:* ₹{existing_product['price']}
-*Stock:* {existing_product['stock']}
-
-Send new product details in this format:
-
-`Product Name | Price | Stock | Info`
-
-Example:
-`Netflix Premium | 499 | 50 | Email: user@test.com\\nPassword: 12345`
-
-⚠️ This will REPLACE the existing product!
-
-🔙 Type /admin to cancel
-""", parse_mode="Markdown")
-        else:
-            await query.edit_message_text(f"""
-📦 *Adding product to category:* {cat['name']}
+        await query.edit_message_text(f"""
+📦 *Setting up product for:* {cat['name']}
 
 Send product details in this format:
 
-`Product Name | Price | Stock | Info`
+`Product Name | Price`
 
 Example:
-`Netflix Premium | 499 | 50 | Email: user@test.com\\nPassword: 12345`
+`Netflix Premium | 499`
+
+After this, use 'Add Stock' button to add email/password line by line.
 
 🔙 Type /admin to cancel
 """, parse_mode="Markdown")
+        context.user_data["admin_action"] = "add_product_basic"
+    
+    # ========== ADD STOCK (Line by Line) ==========
+    elif data == "admin_add_stock":
+        if user_id not in ADMIN_IDS:
+            await query.edit_message_text("🔒 Unauthorized.")
+            return
         
-        context.user_data["admin_action"] = "add_product"
+        cats = list(categories_col.find({}))
+        if not cats:
+            await query.edit_message_text("No categories available.")
+            return
+        
+        keyboard = []
+        for cat in cats:
+            product = products_col.find_one({"category_id": cat["_id"]})
+            if product:
+                stock_count = len(product.get('stock_list', []))
+                keyboard.append([InlineKeyboardButton(f"📊 {cat['name']} - {product['name']} (Stock: {stock_count})", callback_data=f"addstock_cat_{cat['_id']}")])
+        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="admin_panel")])
+        
+        if len(keyboard) == 1:
+            await query.edit_message_text("No products available. First add a product using 'Add/Edit Product'.")
+            return
+        
+        await query.edit_message_text("📊 *Select category to add stock*\n\nSend email/password line by line. Each line will be added to stock.\n\nExample:\n`email: test1@gmail.com | pass: 12345`\n`email: test2@gmail.com | pass: 67890`", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+    
+    elif data.startswith("addstock_cat_"):
+        if user_id not in ADMIN_IDS:
+            await query.edit_message_text("🔒 Unauthorized.")
+            return
+        cat_id = data.split("_")[2]
+        context.user_data["stock_category_id"] = cat_id
+        
+        cat = categories_col.find_one({"_id": ObjectId(cat_id)})
+        product = products_col.find_one({"category_id": ObjectId(cat_id)})
+        
+        await query.edit_message_text(f"""
+📊 *Adding stock to:* {cat['name']} - {product['name']}
+
+*Send stock items line by line.*
+
+Each line will be added to stock.
+
+Example:
+`email: user1@gmail.com | pass: pass123`
+`email: user2@gmail.com | pass: pass456`
+
+Current stock count: {len(product.get('stock_list', []))}
+
+Type /admin when done adding stock.
+""", parse_mode="Markdown")
+        context.user_data["admin_action"] = "add_stock_items"
+    
+    # ========== VIEW STOCK ==========
+    elif data == "admin_view_stock":
+        if user_id not in ADMIN_IDS:
+            await query.edit_message_text("🔒 Unauthorized.")
+            return
+        
+        cats = list(categories_col.find({}))
+        if not cats:
+            await query.edit_message_text("No categories available.")
+            return
+        
+        keyboard = []
+        for cat in cats:
+            product = products_col.find_one({"category_id": cat["_id"]})
+            if product:
+                stock_count = len(product.get('stock_list', []))
+                keyboard.append([InlineKeyboardButton(f"📋 {cat['name']} - {product['name']} (Stock: {stock_count})", callback_data=f"viewstock_cat_{cat['_id']}")])
+        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="admin_panel")])
+        
+        if len(keyboard) == 1:
+            await query.edit_message_text("No products available.")
+            return
+        
+        await query.edit_message_text("📋 *Select category to view stock*", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+    
+    elif data.startswith("viewstock_cat_"):
+        if user_id not in ADMIN_IDS:
+            await query.edit_message_text("🔒 Unauthorized.")
+            return
+        cat_id = data.split("_")[2]
+        product = products_col.find_one({"category_id": ObjectId(cat_id)})
+        cat = categories_col.find_one({"_id": ObjectId(cat_id)})
+        
+        if product:
+            stock_list = product.get('stock_list', [])
+            if not stock_list:
+                await query.edit_message_text(f"📋 *{cat['name']} - {product['name']}*\n\nNo stock available.", parse_mode="Markdown")
+            else:
+                stock_text = "\n".join([f"{i+1}. {item}" for i, item in enumerate(stock_list[:20])])
+                more = f"\n\n... and {len(stock_list) - 20} more" if len(stock_list) > 20 else ""
+                await query.edit_message_text(f"📋 *{cat['name']} - {product['name']}*\n\n*Total Stock:* {len(stock_list)}\n\n{stock_text}{more}", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(back_button("admin_view_stock")))
     
     # ========== EDIT PRICE ==========
     elif data == "admin_edit_price":
@@ -472,78 +543,8 @@ Example:
         product = products_col.find_one({"category_id": ObjectId(cat_id)})
         if product:
             context.user_data["edit_prod_id"] = product["_id"]
-            await query.edit_message_text(f"💰 *Current price:* ₹{product['price']}\n\nSend new price:\n\nExample: `599`\n\n🔙 Type /admin to cancel", parse_mode="Markdown")
+            await query.edit_message_text(f"💰 *Current price:* ₹{product['price']}\n\nSend new price:\n\nExample: `599`", parse_mode="Markdown")
             context.user_data["admin_action"] = "edit_price"
-    
-    # ========== EDIT STOCK ==========
-    elif data == "admin_edit_stock":
-        if user_id not in ADMIN_IDS:
-            await query.edit_message_text("🔒 Unauthorized.")
-            return
-        
-        cats = list(categories_col.find({}))
-        if not cats:
-            await query.edit_message_text("No categories available.")
-            return
-        
-        keyboard = []
-        for cat in cats:
-            product = products_col.find_one({"category_id": cat["_id"]})
-            if product:
-                keyboard.append([InlineKeyboardButton(f"📊 {cat['name']} - {product['name']} (Stock: {product['stock']})", callback_data=f"editstock_cat_{cat['_id']}")])
-        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="admin_panel")])
-        
-        if len(keyboard) == 1:
-            await query.edit_message_text("No products available to edit stock.")
-            return
-        
-        await query.edit_message_text("📊 *Select category to edit product stock:*", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
-    
-    elif data.startswith("editstock_cat_"):
-        if user_id not in ADMIN_IDS:
-            await query.edit_message_text("🔒 Unauthorized.")
-            return
-        cat_id = data.split("_")[2]
-        product = products_col.find_one({"category_id": ObjectId(cat_id)})
-        if product:
-            context.user_data["edit_prod_id"] = product["_id"]
-            await query.edit_message_text(f"📊 *Current stock:* {product['stock']}\n\nSend new stock quantity:\n\nExample: `100`\n\n🔙 Type /admin to cancel", parse_mode="Markdown")
-            context.user_data["admin_action"] = "edit_stock"
-    
-    # ========== EDIT PRODUCT INFO ==========
-    elif data == "admin_edit_info":
-        if user_id not in ADMIN_IDS:
-            await query.edit_message_text("🔒 Unauthorized.")
-            return
-        
-        cats = list(categories_col.find({}))
-        if not cats:
-            await query.edit_message_text("No categories available.")
-            return
-        
-        keyboard = []
-        for cat in cats:
-            product = products_col.find_one({"category_id": cat["_id"]})
-            if product:
-                keyboard.append([InlineKeyboardButton(f"📝 {cat['name']} - {product['name']}", callback_data=f"editinfo_cat_{cat['_id']}")])
-        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="admin_panel")])
-        
-        if len(keyboard) == 1:
-            await query.edit_message_text("No products available to edit info.")
-            return
-        
-        await query.edit_message_text("📝 *Select category to edit product info:*\n\n(Info jo user ko buy karne ke baad milega)", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
-    
-    elif data.startswith("editinfo_cat_"):
-        if user_id not in ADMIN_IDS:
-            await query.edit_message_text("🔒 Unauthorized.")
-            return
-        cat_id = data.split("_")[2]
-        product = products_col.find_one({"category_id": ObjectId(cat_id)})
-        if product:
-            context.user_data["edit_prod_id"] = product["_id"]
-            await query.edit_message_text(f"📝 *Current product info:*\n\n{product['product_info']}\n\nSend new product info:\n\nExample: `Email: user@example.com\\nPassword: 12345`\n\n🔙 Type /admin to cancel", parse_mode="Markdown")
-            context.user_data["admin_action"] = "edit_info"
     
     # ========== PENDING APPROVALS ==========
     elif data == "admin_pending":
@@ -631,7 +632,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["awaiting_screenshot"] = False
         photo = update.message.photo[-1]
         context.user_data["screenshot_file_id"] = photo.file_id
-        await update.message.reply_text("💰 *Enter the amount you paid:*\n\nExample: `250`\n\n🔙 Send /start to cancel", parse_mode="Markdown")
+        await update.message.reply_text("💰 *Enter the amount you paid:*\n\nExample: `250`", parse_mode="Markdown")
         context.user_data["awaiting_amount"] = True
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -644,7 +645,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             amount = int(text)
             if amount < 10:
-                await update.message.reply_text("❌ Minimum amount is ₹10\n\nSend /start to cancel")
+                await update.message.reply_text("❌ Minimum amount is ₹10")
                 return
             context.user_data["recharge_amount"] = amount
             
@@ -667,52 +668,33 @@ Click 'I have paid' after payment
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
         except ValueError:
-            await update.message.reply_text("❌ Please send a valid number.\n\nSend /start to cancel")
+            await update.message.reply_text("❌ Please send a valid number.")
         return
     
-    # ========== ADD CATEGORY - STEP 1: NAME ==========
-    if user_id in ADMIN_IDS and context.user_data.get("admin_action") == "add_cat_name":
-        context.user_data["new_category_name"] = text
-        await update.message.reply_text("💰 *Step 2/2: Enter Category Price (INR)*\n\nExample: `100`\n\n🔙 Type /admin to cancel", parse_mode="Markdown")
-        context.user_data["admin_action"] = "add_cat_price"
+    # ========== ADD CATEGORY ==========
+    if user_id in ADMIN_IDS and context.user_data.get("admin_action") == "add_cat":
+        existing = categories_col.find_one({"name": text})
+        if existing:
+            await update.message.reply_text(f"❌ *Category '{text}' already exists!*", parse_mode="Markdown")
+        else:
+            categories_col.insert_one({
+                "name": text,
+                "created_at": datetime.now()
+            })
+            await update.message.reply_text(f"✅ *Category Added!*\n\n📁 {text}\n\nNow use 'Add/Edit Product' to add product and price.", parse_mode="Markdown")
+        context.user_data.pop("admin_action")
         return
     
-    # ========== ADD CATEGORY - STEP 2: PRICE ==========
-    if user_id in ADMIN_IDS and context.user_data.get("admin_action") == "add_cat_price":
-        try:
-            price = int(text)
-            cat_name = context.user_data["new_category_name"]
-            
-            existing = categories_col.find_one({"name": cat_name})
-            if existing:
-                await update.message.reply_text(f"❌ *Category '{cat_name}' already exists!*\n\nSend /admin to try again", parse_mode="Markdown")
-            else:
-                categories_col.insert_one({
-                    "name": cat_name,
-                    "price": price,
-                    "created_at": datetime.now()
-                })
-                await update.message.reply_text(f"✅ *Category Added Successfully!*\n\n📁 Name: {cat_name}\n💰 Price: ₹{price}\n\nYou can now add a product to this category using 'Add/Edit Product'.", parse_mode="Markdown")
-            
-            context.user_data.pop("admin_action")
-            context.user_data.pop("new_category_name")
-        except ValueError:
-            await update.message.reply_text("❌ *Invalid price!* Please send a number only.\n\nExample: `100`\n\nType /admin to cancel", parse_mode="Markdown")
-        return
-    
-    # ========== ADD/EDIT PRODUCT ==========
-    if user_id in ADMIN_IDS and context.user_data.get("admin_action") == "add_product":
+    # ========== ADD BASIC PRODUCT (Name & Price) ==========
+    if user_id in ADMIN_IDS and context.user_data.get("admin_action") == "add_product_basic":
         parts = text.split('|')
-        if len(parts) == 4:
+        if len(parts) == 2:
             name = parts[0].strip()
             try:
                 price = int(parts[1].strip())
-                stock = int(parts[2].strip())
-                info = parts[3].strip()
                 cat_id = context.user_data.get("product_category_id")
                 cat = categories_col.find_one({"_id": ObjectId(cat_id)})
                 
-                # Check if product already exists - replace it
                 existing = products_col.find_one({"category_id": ObjectId(cat_id)})
                 if existing:
                     products_col.update_one(
@@ -720,32 +702,58 @@ Click 'I have paid' after payment
                         {"$set": {
                             "name": name,
                             "price": price,
-                            "stock": stock,
-                            "product_info": info,
-                            "description": info[:200] if len(info) > 200 else info,
                             "updated_at": datetime.now()
                         }}
                     )
-                    await update.message.reply_text(f"✅ *Product Updated!*\n\n📁 Category: {cat['name']}\n📦 Name: {name}\n💰 Price: ₹{price}\n📊 Stock: {stock}\n\nProduct has been updated.", parse_mode="Markdown")
+                    await update.message.reply_text(f"✅ *Product Updated!*\n\n📁 {cat['name']}\n📦 {name}\n💰 ₹{price}\n\nNow use 'Add Stock' to add email/password line by line.", parse_mode="Markdown")
                 else:
                     products_col.insert_one({
                         "name": name,
                         "price": price,
-                        "stock": stock,
-                        "product_info": info,
-                        "description": info[:200] if len(info) > 200 else info,
+                        "stock": 0,
+                        "stock_list": [],
                         "category_id": ObjectId(cat_id),
                         "created_at": datetime.now()
                     })
-                    await update.message.reply_text(f"✅ *Product Added!*\n\n📁 Category: {cat['name']}\n📦 Name: {name}\n💰 Price: ₹{price}\n📊 Stock: {stock}\n\nProduct has been added to the category.", parse_mode="Markdown")
+                    await update.message.reply_text(f"✅ *Product Added!*\n\n📁 {cat['name']}\n📦 {name}\n💰 ₹{price}\n\nNow use 'Add Stock' to add email/password line by line.", parse_mode="Markdown")
                 
                 context.user_data.pop("admin_action")
                 context.user_data.pop("product_category_id")
             except ValueError:
-                await update.message.reply_text("❌ *Invalid price or stock!* Please send numbers only.\n\nFormat: `Name | Price | Stock | Info`", parse_mode="Markdown")
+                await update.message.reply_text("❌ *Invalid price!* Send a number.\n\nFormat: `Product Name | Price`", parse_mode="Markdown")
         else:
-            await update.message.reply_text("❌ *Invalid format!*\n\nUse this format:\n`Product Name | Price | Stock | Info`\n\nExample:\n`Netflix Premium | 499 | 50 | Email: user@test.com\\nPassword: 12345`", parse_mode="Markdown")
+            await update.message.reply_text("❌ *Invalid format!*\n\nUse: `Product Name | Price`\nExample: `Netflix Premium | 499`", parse_mode="Markdown")
         return
+    
+    # ========== ADD STOCK ITEMS (Line by Line) ==========
+    if user_id in ADMIN_IDS and context.user_data.get("admin_action") == "add_stock_items":
+        lines = text.split('\n')
+        cat_id = context.user_data.get("stock_category_id")
+        product = products_col.find_one({"category_id": ObjectId(cat_id)})
+        
+        if not product:
+            await update.message.reply_text("❌ Product not found!", parse_mode="Markdown")
+            context.user_data.pop("admin_action")
+            context.user_data.pop("stock_category_id")
+            return
+        
+        current_stock = product.get('stock_list', [])
+        added = 0
+        
+        for line in lines:
+            line = line.strip()
+            if line:
+                current_stock.append(line)
+                added += 1
+        
+        # Update product
+        products_col.update_one(
+            {"_id": product["_id"]},
+            {"$set": {"stock_list": current_stock, "stock": len(current_stock)}}
+        )
+        
+        await update.message.reply_text(f"✅ *Stock Added!*\n\n📦 {product['name']}\n➕ Added: {added} items\n📊 Total stock: {len(current_stock)} items\n\nYou can continue sending more items line by line.\nType /admin when done.", parse_mode="Markdown")
+        # Keep the action active for more stock addition
     
     # ========== EDIT PRICE ==========
     if user_id in ADMIN_IDS and context.user_data.get("admin_action") == "edit_price":
@@ -756,31 +764,7 @@ Click 'I have paid' after payment
             products_col.update_one({"_id": ObjectId(prod_id)}, {"$set": {"price": new_price}})
             await update.message.reply_text(f"✅ *Price updated!*\n\n📦 {product['name']}\n💰 Old: ₹{product.get('price',0)}\n💰 New: ₹{new_price}", parse_mode="Markdown")
         except ValueError:
-            await update.message.reply_text("❌ *Invalid price!* Please send a number.\n\nExample: `499`", parse_mode="Markdown")
-        context.user_data.pop("admin_action")
-        context.user_data.pop("edit_prod_id")
-        return
-    
-    # ========== EDIT STOCK ==========
-    if user_id in ADMIN_IDS and context.user_data.get("admin_action") == "edit_stock":
-        try:
-            new_stock = int(text)
-            prod_id = context.user_data["edit_prod_id"]
-            product = products_col.find_one({"_id": ObjectId(prod_id)})
-            products_col.update_one({"_id": ObjectId(prod_id)}, {"$set": {"stock": new_stock}})
-            await update.message.reply_text(f"✅ *Stock updated!*\n\n📦 {product['name']}\n📊 Old: {product.get('stock',0)}\n📊 New: {new_stock}", parse_mode="Markdown")
-        except ValueError:
-            await update.message.reply_text("❌ *Invalid stock!* Please send a number.\n\nExample: `50`", parse_mode="Markdown")
-        context.user_data.pop("admin_action")
-        context.user_data.pop("edit_prod_id")
-        return
-    
-    # ========== EDIT PRODUCT INFO ==========
-    if user_id in ADMIN_IDS and context.user_data.get("admin_action") == "edit_info":
-        prod_id = context.user_data["edit_prod_id"]
-        product = products_col.find_one({"_id": ObjectId(prod_id)})
-        products_col.update_one({"_id": ObjectId(prod_id)}, {"$set": {"product_info": text, "description": text[:200] if len(text) > 200 else text}})
-        await update.message.reply_text(f"✅ *Product info updated!*\n\n📦 {product['name']}\n\n*New info:*\n{text}", parse_mode="Markdown")
+            await update.message.reply_text("❌ *Invalid price!* Send a number.", parse_mode="Markdown")
         context.user_data.pop("admin_action")
         context.user_data.pop("edit_prod_id")
         return
@@ -798,11 +782,11 @@ Click 'I have paid' after payment
                 "status": "pending",
                 "timestamp": datetime.now()
             })
-            await update.message.reply_text("✅ *Recharge request submitted!*\n\nAdmin will verify and approve shortly.\n\nThank you for your patience! 🙏", parse_mode="Markdown")
+            await update.message.reply_text("✅ *Recharge request submitted!*\n\nAdmin will verify and approve shortly.", parse_mode="Markdown")
             for admin_id in ADMIN_IDS:
                 await context.bot.send_message(admin_id, f"💰 *New Recharge Request*\n\n👤 User: `{user_id}`\n💵 Amount: ₹{amount}\n\n🔍 Check /admin", parse_mode="Markdown")
         except ValueError:
-            await update.message.reply_text("❌ *Invalid amount!* Please send a number.\n\nExample: `250`", parse_mode="Markdown")
+            await update.message.reply_text("❌ *Invalid amount!* Send a number.", parse_mode="Markdown")
 
 # ---------- ADMIN COMMAND ----------
 async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -816,8 +800,8 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🗑️ Remove Category", callback_data="admin_remove_cat")],
         [InlineKeyboardButton("📦 Add/Edit Product", callback_data="admin_add_prod")],
         [InlineKeyboardButton("💰 Edit Price", callback_data="admin_edit_price")],
-        [InlineKeyboardButton("📊 Edit Stock", callback_data="admin_edit_stock")],
-        [InlineKeyboardButton("📝 Edit Product Info", callback_data="admin_edit_info")],
+        [InlineKeyboardButton("📊 Add Stock", callback_data="admin_add_stock")],
+        [InlineKeyboardButton("📋 View Stock", callback_data="admin_view_stock")],
         [InlineKeyboardButton("⏳ Pending Approvals", callback_data="admin_pending")],
         [InlineKeyboardButton("📈 Statistics", callback_data="admin_stats")],
         [InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")]
