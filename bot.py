@@ -238,19 +238,15 @@ Tap 'Confirm Buy' to purchase.
             return
             
         if user["wallet"] >= price:
-            # Deduct stock and wallet
             products_col.update_one({"_id": product["_id"]}, {"$inc": {"stock": -1}})
             update_wallet(user_id, -price)
             
-            # Get the product info that admin set
             product_info = product.get('product_info', 'No information provided')
             
             await query.edit_message_text(f"✅ *Purchase Successful!*\n\n📦 {product['name']}\n💰 Amount: ₹{price}\n💳 Remaining: ₹{user['wallet'] - price}", parse_mode="Markdown")
             
-            # Send the product info to user
             await query.message.reply_text(f"🎉 *Here is your {product['name']}!*\n\n{product_info}", parse_mode="Markdown")
             
-            # Notify admin
             for admin_id in ADMIN_IDS:
                 await context.bot.send_message(admin_id, f"🛒 *Purchase*\n\nUser: {user_id}\nProduct: {product['name']}\nAmount: ₹{price}\nStock left: {stock - 1}", parse_mode="Markdown")
         else:
@@ -264,6 +260,7 @@ Tap 'Confirm Buy' to purchase.
             return
         keyboard = [
             [InlineKeyboardButton("📁 Add Category", callback_data="admin_add_cat")],
+            [InlineKeyboardButton("🗑️ Remove Category", callback_data="admin_remove_cat")],
             [InlineKeyboardButton("📦 Add Product", callback_data="admin_add_prod")],
             [InlineKeyboardButton("💰 Edit Price", callback_data="admin_edit_price")],
             [InlineKeyboardButton("📊 Edit Stock", callback_data="admin_edit_stock")],
@@ -272,7 +269,7 @@ Tap 'Confirm Buy' to purchase.
             [InlineKeyboardButton("📈 Statistics", callback_data="admin_stats")],
             [InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")]
         ]
-        await query.edit_message_text("🔧 *Admin Panel*", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text("🔧 *Admin Control Panel*", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
     
     # ========== ADD CATEGORY ==========
     elif data == "admin_add_cat":
@@ -281,6 +278,47 @@ Tap 'Confirm Buy' to purchase.
             return
         await query.edit_message_text("📁 *Send category name:*\n\nExample: `Electronics`", parse_mode="Markdown")
         context.user_data["admin_action"] = "add_cat"
+    
+    # ========== REMOVE CATEGORY ==========
+    elif data == "admin_remove_cat":
+        if user_id not in ADMIN_IDS:
+            await query.edit_message_text("🔒 Unauthorized.")
+            return
+        
+        cats = list(categories_col.find({}))
+        if not cats:
+            await query.edit_message_text("❌ *No categories to remove!*", parse_mode="Markdown")
+            return
+        
+        keyboard = []
+        for cat in cats:
+            # Count products in this category
+            product_count = products_col.count_documents({"category_id": cat["_id"]})
+            keyboard.append([InlineKeyboardButton(f"🗑️ {cat['name']} ({product_count} products)", callback_data=f"remove_cat_{cat['_id']}")])
+        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="admin_panel")])
+        
+        await query.edit_message_text("🗑️ *Select category to remove*\n\n⚠️ *Warning:* All products in this category will also be deleted!", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+    
+    elif data.startswith("remove_cat_"):
+        if user_id not in ADMIN_IDS:
+            await query.edit_message_text("🔒 Unauthorized.")
+            return
+        cat_id = data.split("_")[2]
+        cat = categories_col.find_one({"_id": ObjectId(cat_id)})
+        
+        if cat:
+            # Count products before deleting
+            product_count = products_col.count_documents({"category_id": ObjectId(cat_id)})
+            
+            # Delete all products in this category
+            products_col.delete_many({"category_id": ObjectId(cat_id)})
+            
+            # Delete the category
+            categories_col.delete_one({"_id": ObjectId(cat_id)})
+            
+            await query.edit_message_text(f"✅ *Category Removed!*\n\n📁 Name: {cat['name']}\n📦 Products deleted: {product_count}\n\nAll products in this category have been deleted.", parse_mode="Markdown")
+        else:
+            await query.edit_message_text("❌ Category not found!", parse_mode="Markdown")
     
     # ========== ADD PRODUCT ==========
     elif data == "admin_add_prod":
@@ -305,7 +343,7 @@ Tap 'Confirm Buy' to purchase.
             return
         cat_id = data.split("_")[2]
         context.user_data["product_category_id"] = cat_id
-        await query.edit_message_text("📦 *Send product details in this format:*\n\n`Product Name | Price | Stock | Info`\n\n*For bulk add, send multiple lines:*\n`Product1 | 100 | 10 | Info1`\n`Product2 | 200 | 20 | Info2`\n\nExample:\n`iPhone 14 | 50000 | 5 | Brand new with warranty`", parse_mode="Markdown")
+        await query.edit_message_text("📦 *Send product details in this format:*\n\n`Product Name | Price | Stock | Info`\n\n*For bulk add, send multiple lines:*\n`Product1 | 100 | 10 | Info1`\n`Product2 | 200 | 20 | Info2`\n\nExample:\n`iPhone 14 | 50000 | 5 | Email: user@example.com\\nPassword: 12345`", parse_mode="Markdown")
         context.user_data["admin_action"] = "add_product_bulk"
     
     # ========== EDIT PRICE ==========
@@ -533,7 +571,6 @@ Click 'I have paid' after payment
                     stock = int(parts[2].strip())
                     info = parts[3].strip()
                     
-                    # Check if product already exists
                     existing = products_col.find_one({"name": name, "category_id": ObjectId(cat_id)})
                     if existing:
                         failed += 1
@@ -543,8 +580,8 @@ Click 'I have paid' after payment
                         "name": name,
                         "price": price,
                         "stock": stock,
-                        "description": info[:200],  # Short description for display
-                        "product_info": info,  # Full info for user after purchase
+                        "description": info[:200],
+                        "product_info": info,
                         "category_id": ObjectId(cat_id),
                         "created_at": datetime.now()
                     })
@@ -635,6 +672,7 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     keyboard = [
         [InlineKeyboardButton("📁 Add Category", callback_data="admin_add_cat")],
+        [InlineKeyboardButton("🗑️ Remove Category", callback_data="admin_remove_cat")],
         [InlineKeyboardButton("📦 Add Product", callback_data="admin_add_prod")],
         [InlineKeyboardButton("💰 Edit Price", callback_data="admin_edit_price")],
         [InlineKeyboardButton("📊 Edit Stock", callback_data="admin_edit_stock")],
