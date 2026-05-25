@@ -12,11 +12,11 @@ from urllib.parse import urlparse
 TOKEN = "8862940536:AAF-mUV1F979xcueVNkNt22211Ir7gToMkc"
 MONGO_URI = "mongodb+srv://userbot:userbot@cluster0.iweqz.mongodb.net/test?retryWrites=true&w=majority"
 
-# UPI Configuration
-UPI_ID = "your_upi_id@okhdfcbank"
-UPI_QR_IMAGE_URL = "https://your-domain.com/qr-code.jpg"  # Apna QR code image link yahan daalein
-UPI_NAME = "Your Business Name"
-UPI_PAYEE_ID = "PAYEE123456"  # Paise bhejne ka ID
+# Default UPI Configuration
+DEFAULT_UPI_ID = "your_upi_id@okhdfcbank"
+DEFAULT_UPI_QR_IMAGE_URL = "https://your-domain.com/qr-code.jpg"
+DEFAULT_UPI_NAME = "Your Business Name"
+DEFAULT_UPI_PAYEE_ID = "PAYEE123456"
 
 BOT_START_TIME = datetime.now()
 
@@ -27,6 +27,27 @@ users_col = db["users"]
 products_col = db["products"]
 categories_col = db["categories"]
 recharge_reqs_col = db["recharge_requests"]
+settings_col = db["settings"]  # Settings collection
+
+# ---------- SETTINGS FUNCTIONS ----------
+def get_settings():
+    settings = settings_col.find_one({"_id": "config"})
+    if not settings:
+        settings = {
+            "_id": "config",
+            "upi_id": DEFAULT_UPI_ID,
+            "qr_image_url": DEFAULT_UPI_QR_IMAGE_URL,
+            "upi_name": DEFAULT_UPI_NAME,
+            "payee_id": DEFAULT_UPI_PAYEE_ID
+        }
+        settings_col.insert_one(settings)
+    return settings
+
+def update_qr_and_upi(qr_url, upi_id):
+    settings_col.update_one(
+        {"_id": "config"}, 
+        {"$set": {"qr_image_url": qr_url, "upi_id": upi_id}}
+    )
 
 ADMIN_IDS = [1847314753]
 
@@ -183,6 +204,7 @@ Tap the Recharge button below!
     
     # ========== RECHARGE ==========
     elif data == "recharge":
+        settings = get_settings()
         text = f"""
 ╔══════════════════════════╗
 ║        💳 𝗥𝗘𝗖𝗛𝗔𝗥𝗚𝗘 𝗪𝗔𝗟𝗟𝗘𝗧        ║
@@ -213,15 +235,19 @@ Tap any amount below to proceed.
         amount = int(data.split("_")[1])
         context.user_data["recharge_amount"] = amount
         
-        # Show QR code, UPI ID, Payee ID, Amount info
+        settings = get_settings()
+        qr_url = settings.get('qr_image_url', DEFAULT_UPI_QR_IMAGE_URL)
+        upi_id = settings.get('upi_id', DEFAULT_UPI_ID)
+        payee_id = settings.get('payee_id', DEFAULT_UPI_PAYEE_ID)
+        
         text = f"""
 ╔══════════════════════════╗
 ║      💳 𝗣𝗔𝗬𝗠𝗘𝗡𝗧 𝗗𝗘𝗧𝗔𝗜𝗟𝗦      ║
 ╚══════════════════════════╝
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
-🏦 *UPI ID:* `{UPI_ID}`
-🆔 *Payee ID:* `{UPI_PAYEE_ID}`
+🏦 *UPI ID:* `{upi_id}`
+🆔 *Payee ID:* `{payee_id}`
 💰 *Amount:* ₹{amount}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -245,7 +271,7 @@ Tap any amount below to proceed.
         
         await query.message.delete()
         await query.message.reply_photo(
-            photo=UPI_QR_IMAGE_URL,
+            photo=qr_url,
             caption=text,
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(keyboard)
@@ -505,9 +531,44 @@ Tap any category to view details
             [InlineKeyboardButton("📋 𝗩𝗜𝗘𝗪 𝗦𝗧𝗢𝗖𝗞", callback_data="admin_view_stock")],
             [InlineKeyboardButton("⏳ 𝗣𝗘𝗡𝗗𝗜𝗡𝗚", callback_data="admin_pending")],
             [InlineKeyboardButton("📈 𝗦𝗧𝗔𝗧𝗦", callback_data="admin_stats")],
+            [InlineKeyboardButton("🖼️ 𝗦𝗘𝗧 𝗤𝗥 & 𝗨𝗣𝗜", callback_data="admin_set_qr")],  # New Button
             [InlineKeyboardButton("🔙 𝗠𝗔𝗜𝗡 𝗠𝗘𝗡𝗨", callback_data="main_menu")]
         ]
         await query.edit_message_text("🔧 *ADMIN CONTROL PANEL*\n\nSelect an option:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+    
+    # ========== SET QR & UPI (NEW) ==========
+    elif data == "admin_set_qr":
+        if user_id not in ADMIN_IDS:
+            await query.answer("Unauthorized!", show_alert=True)
+            return
+        
+        settings = get_settings()
+        current_qr = settings.get('qr_image_url', 'Not set')
+        current_upi = settings.get('upi_id', 'Not set')
+        
+        text = f"""
+╔══════════════════════════╗
+║      🖼️ 𝗦𝗘𝗧 𝗤𝗥 & 𝗨𝗣𝗜      ║
+╚══════════════════════════╝
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+📌 *Current QR Image:* 
+`{current_qr}`
+
+📌 *Current UPI ID:* 
+`{current_upi}`
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📝 *Step 1/2:* Send new QR Code Image
+
+You can send:
+• Image URL (https://...)
+• Or send photo directly
+
+Type /admin to cancel
+"""
+        await query.edit_message_text(text, parse_mode="Markdown")
+        context.user_data["admin_action"] = "set_qr_image"
     
     # ========== PENDING REQUESTS ==========
     elif data == "admin_pending":
@@ -823,6 +884,24 @@ Tap any category to view details
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
+    # ========== SET QR IMAGE (ADMIN) ==========
+    if user_id in ADMIN_IDS and context.user_data.get("admin_action") == "set_qr_image":
+        photo = update.message.photo[-1]
+        file_id = photo.file_id
+        
+        # Get file path to download
+        file = await context.bot.get_file(file_id)
+        file_path = file.file_path
+        
+        # Store image URL (using Telegram file URL)
+        image_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_path}"
+        
+        context.user_data["temp_qr_image"] = image_url
+        await update.message.reply_text("✅ *QR Image received!*\n\n📝 *Step 2/2:* Now send UPI ID\n\nExample: `your_upi@okhdfcbank`\n\nType /admin to cancel", parse_mode="Markdown")
+        context.user_data["admin_action"] = "set_upi_id"
+        return
+    
+    # ========== PAYMENT PROOF SCREENSHOT ==========
     if context.user_data.get("awaiting_payment_proof"):
         context.user_data["awaiting_payment_proof"] = False
         photo = update.message.photo[-1]
@@ -867,6 +946,34 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text.strip()
+    
+    # ========== SET UPI ID (ADMIN) ==========
+    if user_id in ADMIN_IDS and context.user_data.get("admin_action") == "set_upi_id":
+        upi_id = text
+        qr_image = context.user_data.get("temp_qr_image")
+        
+        if qr_image and upi_id:
+            # Update both QR and UPI
+            update_qr_and_upi(qr_image, upi_id)
+            await update.message.reply_text(f"""
+✅ *QR & UPI Updated Successfully!*
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+🖼️ *New QR Image:* 
+`{qr_image}`
+
+🏦 *New UPI ID:* 
+`{upi_id}`
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Now users will see the updated QR code when recharging!
+""", parse_mode="Markdown")
+        else:
+            await update.message.reply_text("❌ Something went wrong. Please try again with /admin", parse_mode="Markdown")
+        
+        context.user_data.pop("admin_action")
+        context.user_data.pop("temp_qr_image")
+        return
     
     # ========== WAITING FOR PAYMENT PROOF (UTR) ==========
     if context.user_data.get("awaiting_payment_proof"):
@@ -919,14 +1026,19 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             context.user_data["recharge_amount"] = amount
             
+            settings = get_settings()
+            qr_url = settings.get('qr_image_url', DEFAULT_UPI_QR_IMAGE_URL)
+            upi_id = settings.get('upi_id', DEFAULT_UPI_ID)
+            payee_id = settings.get('payee_id', DEFAULT_UPI_PAYEE_ID)
+            
             text = f"""
 ╔══════════════════════════╗
 ║      💳 𝗣𝗔𝗬𝗠𝗘𝗡𝗧 𝗗𝗘𝗧𝗔𝗜𝗟𝗦      ║
 ╚══════════════════════════╝
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
-🏦 *UPI ID:* `{UPI_ID}`
-🆔 *Payee ID:* `{UPI_PAYEE_ID}`
+🏦 *UPI ID:* `{upi_id}`
+🆔 *Payee ID:* `{payee_id}`
 💰 *Amount:* ₹{amount}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -949,7 +1061,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]
             
             await update.message.reply_photo(
-                photo=UPI_QR_IMAGE_URL,
+                photo=qr_url,
                 caption=text,
                 parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup(keyboard)
@@ -1041,6 +1153,7 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📋 𝗩𝗜𝗘𝗪 𝗦𝗧𝗢𝗖𝗞", callback_data="admin_view_stock")],
         [InlineKeyboardButton("⏳ 𝗣𝗘𝗡𝗗𝗜𝗡𝗚", callback_data="admin_pending")],
         [InlineKeyboardButton("📈 𝗦𝗧𝗔𝗧𝗦", callback_data="admin_stats")],
+        [InlineKeyboardButton("🖼️ 𝗦𝗘𝗧 𝗤𝗥 & 𝗨𝗣𝗜", callback_data="admin_set_qr")],
         [InlineKeyboardButton("🔙 𝗠𝗔𝗜𝗡 𝗠𝗘𝗡𝗨", callback_data="main_menu")]
     ]
     await update.message.reply_text("🔧 *ADMIN CONTROL PANEL*\n\nWelcome Admin!", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
