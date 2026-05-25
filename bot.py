@@ -7,6 +7,8 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 from pymongo import MongoClient
 import requests
 from urllib.parse import urlparse
+import time
+import threading
 
 # ---------- CONFIG ----------
 TOKEN = "8862940536:AAF-mUV1F979xcueVNkNt22211Ir7gToMkc"
@@ -31,7 +33,7 @@ recharge_reqs_col = db["recharge_requests"]
 # Admin IDs
 ADMIN_IDS = [1847314753]
 
-# ---------- FIXED LOGGING ----------
+# ---------- LOGGING ----------
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -197,22 +199,7 @@ Tap any amount below to proceed.
     elif data.startswith("amount_"):
         amount = int(data.split("_")[1])
         context.user_data["recharge_amount"] = amount
-        
-        text = f"""
-💳 RECHARGE PROCESS
-━━━━━━━━━━━━━━━━━━
-💰 Amount: ₹{amount}
-━━━━━━━━━━━━━━━━━━
-
-📝 Please send your UPI Transaction ID
-
-Example: TXN123456789
-
-Or send payment screenshot (image)
-
-⚠️ Transaction ID is mandatory for verification
-"""
-        await query.edit_message_text(text, parse_mode="Markdown")
+        await query.edit_message_text(f"💰 Please send UPI Transaction ID or payment screenshot for ₹{amount}:", parse_mode="Markdown")
         context.user_data["awaiting_transaction_id"] = True
     
     # ========== PRODUCTS ==========
@@ -428,7 +415,7 @@ Tap any category to view details
         ]
         await query.edit_message_text("🔧 ADMIN CONTROL PANEL\n\nSelect an option:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
     
-    # ========== PENDING REQUESTS (WITH APPROVE/REJECT BUTTONS) ==========
+    # ========== PENDING REQUESTS (WITH APPROVE/REJECT BUTTONS - LIKE YOUR CODE) ==========
     elif data == "admin_pending":
         if user_id not in ADMIN_IDS:
             await query.answer("Unauthorized!", show_alert=True)
@@ -454,18 +441,18 @@ Tap any category to view details
             proof_type = req.get('proof_type', 'unknown')
             req_time = req.get('timestamp', datetime.now())
             
-            # Create approve/reject buttons
+            # Create approve/reject buttons (same as your code)
             buttons = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("✅ APPROVE", callback_data=f"approve_{req['_id']}"),
-                    InlineKeyboardButton("❌ REJECT", callback_data=f"reject_{req['_id']}")
+                    InlineKeyboardButton("✅ Approve", callback_data=f"approve_rech_{req['_id']}"),
+                    InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_rech_{req['_id']}")
                 ]
             ])
             
             message = f"""
 💰 RECHARGE REQUEST
 ━━━━━━━━━━━━━━━━━━
-👤 User ID: {user_id_req}
+👤 User: {user_id_req}
 💵 Amount: ₹{amount}
 🆔 Transaction ID: {transaction_id}
 📝 Proof Type: {proof_type}
@@ -484,76 +471,103 @@ Tap any category to view details
                 else:
                     await query.message.reply_text(message, parse_mode="Markdown", reply_markup=buttons)
             except Exception as e:
-                logger.error(f"Error sending pending request: {e}")
+                logger.error(f"Error: {e}")
                 await query.message.reply_text(message, parse_mode="Markdown", reply_markup=buttons)
         
         await query.message.reply_text("✅ Use the buttons above to approve or reject each request", parse_mode="Markdown")
     
-    # ========== APPROVE ==========
-    elif data.startswith("approve_"):
+    # ========== APPROVE RECHARGE (Like your code) ==========
+    elif data.startswith("approve_rech_"):
         if user_id not in ADMIN_IDS:
             await query.answer("Unauthorized!", show_alert=True)
             return
         
-        req_id = data.split("_")[1]
-        req = recharge_reqs_col.find_one({"_id": ObjectId(req_id)})
+        req_id_str = data.split("_")[2]
+        req_id = ObjectId(req_id_str)
+        req = recharge_reqs_col.find_one({"_id": req_id})
         
         if req and req["status"] == "pending":
-            update_wallet(req["user_id"], req["amount"])
+            amount = req.get('amount', 0)
+            target_user_id = req.get('user_id')
+            
+            # Add balance to user
+            update_wallet(target_user_id, amount)
+            
+            # Update total recharge
             users_col.update_one(
-                {"user_id": req["user_id"]}, 
-                {"$inc": {"total_recharge": req["amount"], "today_recharge": req["amount"]},
+                {"user_id": target_user_id}, 
+                {"$inc": {"total_recharge": amount, "today_recharge": amount},
                  "$set": {"last_recharge_date": datetime.now().strftime("%Y-%m-%d")}}
             )
-            recharge_reqs_col.update_one({"_id": ObjectId(req_id)}, {"$set": {"status": "approved"}})
+            
+            # Update request status
+            recharge_reqs_col.update_one({"_id": req_id}, {"$set": {"status": "approved", "processed_at": datetime.now()}})
             
             await query.edit_message_text(f"""
 ✅ APPROVED!
 
-💰 Amount: ₹{req['amount']} added to user's wallet.
-👤 User: {req['user_id']}
+💰 Amount: ₹{amount} added to user's wallet.
+👤 User: {target_user_id}
 
 The user has been notified.
 """, parse_mode="Markdown")
             
+            # Notify user
             try:
-                new_balance = get_user(req["user_id"])['wallet']
-                await context.bot.send_message(req["user_id"], f"""
+                new_balance = get_user(target_user_id)['wallet']
+                kb = InlineKeyboardMarkup()
+                kb.add(InlineKeyboardButton("🛒 Buy Account Now", callback_data="products"))
+                
+                await context.bot.send_message(target_user_id, f"""
 ✅ RECHARGE APPROVED!
 ━━━━━━━━━━━━━━━━━━
-💰 Amount: ₹{req['amount']}
+💰 Amount: ₹{amount}
 💳 New Balance: ₹{format_number(new_balance)}
 ━━━━━━━━━━━━━━━━━━
 Thank you for recharging! 🎉
-""", parse_mode="Markdown")
+
+Click below to buy accounts:
+""", parse_mode="Markdown", reply_markup=kb)
             except Exception as e:
                 logger.error(f"Could not notify user: {e}")
         else:
             await query.edit_message_text("❌ Request not found or already processed", parse_mode="Markdown")
     
-    # ========== REJECT ==========
-    elif data.startswith("reject_"):
+    # ========== CANCEL/REJECT RECHARGE (Like your code) ==========
+    elif data.startswith("cancel_rech_"):
         if user_id not in ADMIN_IDS:
             await query.answer("Unauthorized!", show_alert=True)
             return
         
-        req_id = data.split("_")[1]
-        req = recharge_reqs_col.find_one({"_id": ObjectId(req_id)})
+        req_id_str = data.split("_")[2]
+        req_id = ObjectId(req_id_str)
+        req = recharge_reqs_col.find_one({"_id": req_id})
         
         if req and req["status"] == "pending":
-            recharge_reqs_col.update_one({"_id": ObjectId(req_id)}, {"$set": {"status": "rejected"}})
+            amount = req.get('amount', 0)
+            target_user_id = req.get('user_id')
+            
+            recharge_reqs_col.update_one({"_id": req_id}, {"$set": {"status": "cancelled", "processed_at": datetime.now()}})
             
             await query.edit_message_text(f"""
-❌ REJECTED!
+❌ CANCELLED/REJECTED!
 
-💰 Amount: ₹{req['amount']}
-👤 User: {req['user_id']}
+💰 Amount: ₹{amount}
+👤 User: {target_user_id}
 
 The user has been notified.
 """, parse_mode="Markdown")
             
+            # Notify user
             try:
-                await context.bot.send_message(req["user_id"], "❌ Your recharge request was rejected.\n\nPlease contact support for more information.", parse_mode="Markdown")
+                await context.bot.send_message(target_user_id, f"""
+❌ RECHARGE REJECTED!
+━━━━━━━━━━━━━━━━━━
+💰 Amount: ₹{amount}
+
+Your recharge request was rejected.
+Please contact support for more information.
+""", parse_mode="Markdown")
             except Exception as e:
                 logger.error(f"Could not notify user: {e}")
         else:
@@ -694,7 +708,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_id = photo.file_id
         amount = context.user_data.get("recharge_amount", 0)
         
+        # Store recharge request
+        req_id = ObjectId()
         recharge_reqs_col.insert_one({
+            "_id": req_id,
             "user_id": user_id,
             "amount": amount,
             "screenshot_file_id": file_id,
@@ -706,32 +723,21 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text("✅ Recharge request submitted!\n\nAdmin will verify and approve shortly.", parse_mode="Markdown")
         
-        for admin_id in ADMIN_IDS:
-            await context.bot.send_message(admin_id, f"💰 New Recharge Request\n👤 User: {user_id}\n💵 Amount: ₹{amount}\n📸 Screenshot received\n\nCheck /admin for pending requests", parse_mode="Markdown")
-        
-        context.user_data.pop("recharge_amount", None)
-        return
-    
-    if context.user_data.get("awaiting_payment_proof"):
-        context.user_data["awaiting_payment_proof"] = False
-        photo = update.message.photo[-1]
-        file_id = photo.file_id
-        amount = context.user_data.get("recharge_amount", 0)
-        
-        recharge_reqs_col.insert_one({
-            "user_id": user_id,
-            "amount": amount,
-            "screenshot_file_id": file_id,
-            "transaction_id": "Screenshot uploaded",
-            "proof_type": "screenshot",
-            "status": "pending",
-            "timestamp": datetime.now()
-        })
-        
-        await update.message.reply_text("✅ Recharge request submitted!", parse_mode="Markdown")
+        # Notify admin with buttons
+        buttons = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Approve", callback_data=f"approve_rech_{req_id}"),
+             InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_rech_{req_id}")]
+        ])
         
         for admin_id in ADMIN_IDS:
-            await context.bot.send_message(admin_id, f"💰 New Recharge: ₹{amount} from {user_id}\n📸 Screenshot attached")
+            await context.bot.send_photo(admin_id, photo=file_id, caption=f"""
+💰 NEW RECHARGE REQUEST
+━━━━━━━━━━━━━━━━━━
+👤 User: {user_id}
+💵 Amount: ₹{amount}
+📸 Screenshot attached
+━━━━━━━━━━━━━━━━━━
+""", parse_mode="Markdown", reply_markup=buttons)
         
         context.user_data.pop("recharge_amount", None)
         return
@@ -746,6 +752,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         transaction_id = text
         amount = context.user_data.get("recharge_amount", 0)
         
+        # Check if it's an image URL
         is_image = False
         image_url = None
         
@@ -755,7 +762,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 image_url = text
         
         if is_image:
+            req_id = ObjectId()
             recharge_reqs_col.insert_one({
+                "_id": req_id,
                 "user_id": user_id,
                 "amount": amount,
                 "screenshot_file_id": image_url,
@@ -766,17 +775,24 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             })
             await update.message.reply_text("✅ Recharge request submitted with image!\n\nAdmin will verify and approve shortly.", parse_mode="Markdown")
             
+            buttons = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Approve", callback_data=f"approve_rech_{req_id}"),
+                 InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_rech_{req_id}")]
+            ])
+            
             for admin_id in ADMIN_IDS:
                 await context.bot.send_photo(admin_id, photo=image_url, caption=f"""
-💰 New Recharge Request
+💰 NEW RECHARGE REQUEST
 ━━━━━━━━━━━━━━━━━━
 👤 User: {user_id}
 💵 Amount: ₹{amount}
 🖼️ Payment Screenshot Attached
 ━━━━━━━━━━━━━━━━━━
-""", parse_mode="Markdown")
+""", parse_mode="Markdown", reply_markup=buttons)
         else:
+            req_id = ObjectId()
             recharge_reqs_col.insert_one({
+                "_id": req_id,
                 "user_id": user_id,
                 "amount": amount,
                 "screenshot_file_id": None,
@@ -787,15 +803,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             })
             await update.message.reply_text("✅ Recharge request submitted!\n\nAdmin will verify using your Transaction ID.\n\nPlease wait for approval.", parse_mode="Markdown")
             
+            buttons = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Approve", callback_data=f"approve_rech_{req_id}"),
+                 InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_rech_{req_id}")]
+            ])
+            
             for admin_id in ADMIN_IDS:
                 await context.bot.send_message(admin_id, f"""
-💰 New Recharge Request
+💰 NEW RECHARGE REQUEST
 ━━━━━━━━━━━━━━━━━━
 👤 User: {user_id}
 💵 Amount: ₹{amount}
 🆔 Transaction ID: {text}
 ━━━━━━━━━━━━━━━━━━
-""", parse_mode="Markdown")
+""", parse_mode="Markdown", reply_markup=buttons)
         
         context.user_data.pop("recharge_amount", None)
         return
@@ -809,20 +830,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ Minimum amount is ₹10")
                 return
             context.user_data["recharge_amount"] = amount
-            
-            text_msg = f"""
-💳 RECHARGE PROCESS
-━━━━━━━━━━━━━━━━━━
-💰 Amount: ₹{amount}
-━━━━━━━━━━━━━━━━━━
-
-📝 Please send your UPI Transaction ID
-
-Or send payment screenshot
-
-⚠️ Transaction ID is mandatory for verification
-"""
-            await update.message.reply_text(text_msg, parse_mode="Markdown")
+            await update.message.reply_text(f"💰 Please send UPI Transaction ID or payment screenshot for ₹{amount}:", parse_mode="Markdown")
             context.user_data["awaiting_transaction_id"] = True
         except:
             await update.message.reply_text("❌ Please send a valid number")
@@ -879,7 +887,7 @@ Or send payment screenshot
         products_col.update_one({"_id": product["_id"]}, {"$set": {"stock_list": current, "stock": len(current)}})
         
         cat = categories_col.find_one({"_id": ObjectId(cat_id)})
-        await update.message.reply_text(f"✅ Stock Added!\n\n📁 {cat['name']}\n➕ Added: {added} items\n📊 Total: {len(current)} items", parse_mode="Markdown")
+        await update.message.reply_text(f"✅ Stock Added!\n\n📁 {cat['name']}\n➕ Added: {added} items\n📊 Total: {len(current)} items\n\nYou can continue adding more stock.", parse_mode="Markdown")
         return
     
     # ========== EDIT PRICE ==========
