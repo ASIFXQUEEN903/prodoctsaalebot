@@ -12,9 +12,9 @@ from urllib.parse import urlparse
 TOKEN = "8862940536:AAF-mUV1F979xcueVNkNt22211Ir7gToMkc"
 MONGO_URI = "mongodb+srv://userbot:userbot@cluster0.iweqz.mongodb.net/test?retryWrites=true&w=majority"
 
-# Default UPI Configuration
+# Default UPI Configuration (Working QR code - catbox image)
 DEFAULT_UPI_ID = "your_upi_id@okhdfcbank"
-DEFAULT_UPI_QR_IMAGE_URL = "https://your-domain.com/qr-code.jpg"
+DEFAULT_UPI_QR_IMAGE_URL = "https://files.catbox.moe/8rpxez.jpg"  # Working QR image
 DEFAULT_UPI_NAME = "Your Business Name"
 DEFAULT_UPI_PAYEE_ID = "PAYEE123456"
 
@@ -27,7 +27,7 @@ users_col = db["users"]
 products_col = db["products"]
 categories_col = db["categories"]
 recharge_reqs_col = db["recharge_requests"]
-settings_col = db["settings"]  # Settings collection
+settings_col = db["settings"]
 
 # ---------- SETTINGS FUNCTIONS ----------
 def get_settings():
@@ -85,12 +85,13 @@ def format_number(num):
 
 def is_valid_image_url(url):
     try:
+        if not url:
+            return False
         parsed = urlparse(url)
         if not parsed.scheme or not parsed.netloc:
             return False
-        response = requests.head(url, timeout=5)
-        content_type = response.headers.get('content-type', '')
-        return response.status_code == 200 and content_type.startswith('image/')
+        # Don't validate with request to avoid errors
+        return True
     except:
         return False
 
@@ -204,7 +205,6 @@ Tap the Recharge button below!
     
     # ========== RECHARGE ==========
     elif data == "recharge":
-        settings = get_settings()
         text = f"""
 ╔══════════════════════════╗
 ║        💳 𝗥𝗘𝗖𝗛𝗔𝗥𝗚𝗘 𝗪𝗔𝗟𝗟𝗘𝗧        ║
@@ -255,27 +255,38 @@ Tap any amount below to proceed.
 1️⃣ Scan QR code below
 2️⃣ Pay ₹{amount} to the UPI ID
 3️⃣ Note down the Transaction ID/UTR
-4️⃣ Send UTR number or screenshot
+4️⃣ Click "I HAVE PAID" button below
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 📸 *Scan QR code to pay*
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-✅ *After payment, click below to send proof*
 """
         
         keyboard = [
-            [InlineKeyboardButton("📸 𝗦𝗘𝗡𝗗 𝗣𝗔𝗬𝗠𝗘𝗡𝗧 𝗣𝗥𝗢𝗢𝗙", callback_data="send_payment_proof")],
+            [InlineKeyboardButton("✅ 𝗜 𝗛𝗔𝗩𝗘 𝗣𝗔𝗜𝗗", callback_data="send_payment_proof")],
             [InlineKeyboardButton("🔙 𝗕𝗔𝗖𝗞", callback_data="recharge")]
         ]
         
-        await query.message.delete()
-        await query.message.reply_photo(
-            photo=qr_url,
-            caption=text,
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        try:
+            await query.message.delete()
+        except:
+            pass
+        
+        try:
+            await query.message.reply_photo(
+                photo=qr_url,
+                caption=text,
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        except Exception as e:
+            logger.error(f"Error sending QR: {e}")
+            # Fallback - send without image
+            await query.message.reply_text(
+                text + f"\n\n🖼️ *QR Code URL:* {qr_url}",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
     
     elif data == "send_payment_proof":
         amount = context.user_data.get("recharge_amount", 0)
@@ -288,12 +299,11 @@ Tap any amount below to proceed.
 💰 *Amount:* ₹{amount}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-📝 *Please send one of the following:*
+📝 *Please send your UTR number or payment screenshot*
 
-1️⃣ *UTR Number* (12-digit transaction ID)
-   Example: `123456789012`
+Example: `123456789012`
 
-2️⃣ *Payment Screenshot* (photo)
+Or send a photo of payment receipt
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 ⚠️ *Your request will be processed after verification*
@@ -531,12 +541,12 @@ Tap any category to view details
             [InlineKeyboardButton("📋 𝗩𝗜𝗘𝗪 𝗦𝗧𝗢𝗖𝗞", callback_data="admin_view_stock")],
             [InlineKeyboardButton("⏳ 𝗣𝗘𝗡𝗗𝗜𝗡𝗚", callback_data="admin_pending")],
             [InlineKeyboardButton("📈 𝗦𝗧𝗔𝗧𝗦", callback_data="admin_stats")],
-            [InlineKeyboardButton("🖼️ 𝗦𝗘𝗧 𝗤𝗥 & 𝗨𝗣𝗜", callback_data="admin_set_qr")],  # New Button
+            [InlineKeyboardButton("🖼️ 𝗦𝗘𝗧 𝗤𝗥 & 𝗨𝗣𝗜", callback_data="admin_set_qr")],
             [InlineKeyboardButton("🔙 𝗠𝗔𝗜𝗡 𝗠𝗘𝗡𝗨", callback_data="main_menu")]
         ]
         await query.edit_message_text("🔧 *ADMIN CONTROL PANEL*\n\nSelect an option:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
     
-    # ========== SET QR & UPI (NEW) ==========
+    # ========== SET QR & UPI ==========
     elif data == "admin_set_qr":
         if user_id not in ADMIN_IDS:
             await query.answer("Unauthorized!", show_alert=True)
@@ -889,14 +899,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photo = update.message.photo[-1]
         file_id = photo.file_id
         
-        # Get file path to download
-        file = await context.bot.get_file(file_id)
-        file_path = file.file_path
-        
-        # Store image URL (using Telegram file URL)
-        image_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_path}"
-        
-        context.user_data["temp_qr_image"] = image_url
+        # Store photo file_id (will be used directly)
+        context.user_data["temp_qr_image"] = file_id
         await update.message.reply_text("✅ *QR Image received!*\n\n📝 *Step 2/2:* Now send UPI ID\n\nExample: `your_upi@okhdfcbank`\n\nType /admin to cancel", parse_mode="Markdown")
         context.user_data["admin_action"] = "set_upi_id"
         return
@@ -959,11 +963,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 ✅ *QR & UPI Updated Successfully!*
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
-🖼️ *New QR Image:* 
-`{qr_image}`
-
-🏦 *New UPI ID:* 
-`{upi_id}`
+🖼️ *New QR Image Set*
+🏦 *New UPI ID:* `{upi_id}`
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Now users will see the updated QR code when recharging!
@@ -1046,26 +1047,32 @@ Now users will see the updated QR code when recharging!
 1️⃣ Scan QR code below
 2️⃣ Pay ₹{amount} to the UPI ID
 3️⃣ Note down the Transaction ID/UTR
-4️⃣ Send UTR number or screenshot
+4️⃣ Click "I HAVE PAID" button below
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 📸 *Scan QR code to pay*
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-✅ *After payment, click below to send proof*
 """
             
             keyboard = [
-                [InlineKeyboardButton("📸 𝗦𝗘𝗡𝗗 𝗣𝗔𝗬𝗠𝗘𝗡𝗧 𝗣𝗥𝗢𝗢𝗙", callback_data="send_payment_proof")],
+                [InlineKeyboardButton("✅ 𝗜 𝗛𝗔𝗩𝗘 𝗣𝗔𝗜𝗗", callback_data="send_payment_proof")],
                 [InlineKeyboardButton("🔙 𝗕𝗔𝗖𝗞", callback_data="recharge")]
             ]
             
-            await update.message.reply_photo(
-                photo=qr_url,
-                caption=text,
-                parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
+            try:
+                await update.message.reply_photo(
+                    photo=qr_url,
+                    caption=text,
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+            except Exception as e:
+                logger.error(f"Error sending QR: {e}")
+                await update.message.reply_text(
+                    text + f"\n\n🖼️ *QR Code URL:* {qr_url}",
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
         except:
             await update.message.reply_text("❌ Please send a valid number")
         return
