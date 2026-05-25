@@ -7,8 +7,6 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 from pymongo import MongoClient
 import requests
 from urllib.parse import urlparse
-import time
-import threading
 
 # ---------- CONFIG ----------
 TOKEN = "8862940536:AAF-mUV1F979xcueVNkNt22211Ir7gToMkc"
@@ -19,7 +17,6 @@ UPI_ID = "your_upi_id@okhdfcbank"
 UPI_QR_IMAGE_URL = "https://your-domain.com/qr-code.jpg"
 UPI_NAME = "Your Business Name"
 
-# Store Bot Start Time
 BOT_START_TIME = datetime.now()
 
 # ---------- DATABASE ----------
@@ -30,7 +27,6 @@ products_col = db["products"]
 categories_col = db["categories"]
 recharge_reqs_col = db["recharge_requests"]
 
-# Admin IDs
 ADMIN_IDS = [1847314753]
 
 # ---------- LOGGING ----------
@@ -67,6 +63,7 @@ def format_number(num):
 
 def is_valid_image_url(url):
     try:
+        from urllib.parse import urlparse
         parsed = urlparse(url)
         if not parsed.scheme or not parsed.netloc:
             return False
@@ -415,7 +412,7 @@ Tap any category to view details
         ]
         await query.edit_message_text("🔧 ADMIN CONTROL PANEL\n\nSelect an option:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
     
-    # ========== PENDING REQUESTS (WITH APPROVE/REJECT BUTTONS - LIKE YOUR CODE) ==========
+    # ========== PENDING REQUESTS ==========
     elif data == "admin_pending":
         if user_id not in ADMIN_IDS:
             await query.answer("Unauthorized!", show_alert=True)
@@ -441,11 +438,11 @@ Tap any category to view details
             proof_type = req.get('proof_type', 'unknown')
             req_time = req.get('timestamp', datetime.now())
             
-            # Create approve/reject buttons (same as your code)
+            # Create approve/reject buttons
             buttons = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("✅ Approve", callback_data=f"approve_rech_{req['_id']}"),
-                    InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_rech_{req['_id']}")
+                    InlineKeyboardButton("✅ APPROVE", callback_data=f"approve_rech_{req['_id']}"),
+                    InlineKeyboardButton("❌ REJECT", callback_data=f"reject_rech_{req['_id']}")
                 ]
             ])
             
@@ -473,10 +470,8 @@ Tap any category to view details
             except Exception as e:
                 logger.error(f"Error: {e}")
                 await query.message.reply_text(message, parse_mode="Markdown", reply_markup=buttons)
-        
-        await query.message.reply_text("✅ Use the buttons above to approve or reject each request", parse_mode="Markdown")
     
-    # ========== APPROVE RECHARGE (Like your code) ==========
+    # ========== APPROVE RECHARGE (WITH DELETE) ==========
     elif data.startswith("approve_rech_"):
         if user_id not in ADMIN_IDS:
             await query.answer("Unauthorized!", show_alert=True)
@@ -503,13 +498,19 @@ Tap any category to view details
             # Update request status
             recharge_reqs_col.update_one({"_id": req_id}, {"$set": {"status": "approved", "processed_at": datetime.now()}})
             
-            await query.edit_message_text(f"""
+            # DELETE the request message from admin
+            try:
+                await query.message.delete()
+            except:
+                pass
+            
+            # Send confirmation to admin
+            await context.bot.send_message(ADMIN_ID, f"""
 ✅ APPROVED!
 
 💰 Amount: ₹{amount} added to user's wallet.
 👤 User: {target_user_id}
-
-The user has been notified.
+━━━━━━━━━━━━━━━━━━
 """, parse_mode="Markdown")
             
             # Notify user
@@ -531,10 +532,14 @@ Click below to buy accounts:
             except Exception as e:
                 logger.error(f"Could not notify user: {e}")
         else:
-            await query.edit_message_text("❌ Request not found or already processed", parse_mode="Markdown")
+            await query.answer("Request already processed!", show_alert=True)
+            try:
+                await query.message.delete()
+            except:
+                pass
     
-    # ========== CANCEL/REJECT RECHARGE (Like your code) ==========
-    elif data.startswith("cancel_rech_"):
+    # ========== REJECT RECHARGE (WITH DELETE) ==========
+    elif data.startswith("reject_rech_"):
         if user_id not in ADMIN_IDS:
             await query.answer("Unauthorized!", show_alert=True)
             return
@@ -547,15 +552,21 @@ Click below to buy accounts:
             amount = req.get('amount', 0)
             target_user_id = req.get('user_id')
             
-            recharge_reqs_col.update_one({"_id": req_id}, {"$set": {"status": "cancelled", "processed_at": datetime.now()}})
+            recharge_reqs_col.update_one({"_id": req_id}, {"$set": {"status": "rejected", "processed_at": datetime.now()}})
             
-            await query.edit_message_text(f"""
-❌ CANCELLED/REJECTED!
+            # DELETE the request message from admin
+            try:
+                await query.message.delete()
+            except:
+                pass
+            
+            # Send confirmation to admin
+            await context.bot.send_message(ADMIN_ID, f"""
+❌ REJECTED!
 
 💰 Amount: ₹{amount}
 👤 User: {target_user_id}
-
-The user has been notified.
+━━━━━━━━━━━━━━━━━━
 """, parse_mode="Markdown")
             
             # Notify user
@@ -571,7 +582,11 @@ Please contact support for more information.
             except Exception as e:
                 logger.error(f"Could not notify user: {e}")
         else:
-            await query.edit_message_text("❌ Request not found or already processed", parse_mode="Markdown")
+            await query.answer("Request already processed!", show_alert=True)
+            try:
+                await query.message.delete()
+            except:
+                pass
     
     # ========== ADD CATEGORY ==========
     elif data == "admin_add_cat":
@@ -708,7 +723,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_id = photo.file_id
         amount = context.user_data.get("recharge_amount", 0)
         
-        # Store recharge request
         req_id = ObjectId()
         recharge_reqs_col.insert_one({
             "_id": req_id,
@@ -725,8 +739,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Notify admin with buttons
         buttons = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Approve", callback_data=f"approve_rech_{req_id}"),
-             InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_rech_{req_id}")]
+            [InlineKeyboardButton("✅ APPROVE", callback_data=f"approve_rech_{req_id}"),
+             InlineKeyboardButton("❌ REJECT", callback_data=f"reject_rech_{req_id}")]
         ])
         
         for admin_id in ADMIN_IDS:
@@ -776,8 +790,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("✅ Recharge request submitted with image!\n\nAdmin will verify and approve shortly.", parse_mode="Markdown")
             
             buttons = InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ Approve", callback_data=f"approve_rech_{req_id}"),
-                 InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_rech_{req_id}")]
+                [InlineKeyboardButton("✅ APPROVE", callback_data=f"approve_rech_{req_id}"),
+                 InlineKeyboardButton("❌ REJECT", callback_data=f"reject_rech_{req_id}")]
             ])
             
             for admin_id in ADMIN_IDS:
@@ -804,8 +818,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("✅ Recharge request submitted!\n\nAdmin will verify using your Transaction ID.\n\nPlease wait for approval.", parse_mode="Markdown")
             
             buttons = InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ Approve", callback_data=f"approve_rech_{req_id}"),
-                 InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_rech_{req_id}")]
+                [InlineKeyboardButton("✅ APPROVE", callback_data=f"approve_rech_{req_id}"),
+                 InlineKeyboardButton("❌ REJECT", callback_data=f"reject_rech_{req_id}")]
             ])
             
             for admin_id in ADMIN_IDS:
