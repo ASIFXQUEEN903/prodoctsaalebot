@@ -14,8 +14,9 @@ MONGO_URI = "mongodb+srv://userbot:userbot@cluster0.iweqz.mongodb.net/test?retry
 
 # UPI Configuration
 UPI_ID = "your_upi_id@okhdfcbank"
-UPI_QR_IMAGE_URL = "https://your-domain.com/qr-code.jpg"
+UPI_QR_IMAGE_URL = "https://your-domain.com/qr-code.jpg"  # Apna QR code image link yahan daalein
 UPI_NAME = "Your Business Name"
+UPI_PAYEE_ID = "PAYEE123456"  # Paise bhejne ka ID
 
 BOT_START_TIME = datetime.now()
 
@@ -211,8 +212,68 @@ Tap any amount below to proceed.
     elif data.startswith("amount_"):
         amount = int(data.split("_")[1])
         context.user_data["recharge_amount"] = amount
-        await query.edit_message_text(f"💰 *Please send UPI Transaction ID or payment screenshot for ₹{amount}:*", parse_mode="Markdown")
-        context.user_data["awaiting_transaction_id"] = True
+        
+        # Show QR code, UPI ID, Payee ID, Amount info
+        text = f"""
+╔══════════════════════════╗
+║      💳 𝗣𝗔𝗬𝗠𝗘𝗡𝗧 𝗗𝗘𝗧𝗔𝗜𝗟𝗦      ║
+╚══════════════════════════╝
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+🏦 *UPI ID:* `{UPI_ID}`
+🆔 *Payee ID:* `{UPI_PAYEE_ID}`
+💰 *Amount:* ₹{amount}
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📱 *Payment Steps:*
+1️⃣ Scan QR code below
+2️⃣ Pay ₹{amount} to the UPI ID
+3️⃣ Note down the Transaction ID/UTR
+4️⃣ Send UTR number or screenshot
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+📸 *Scan QR code to pay*
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✅ *After payment, click below to send proof*
+"""
+        
+        keyboard = [
+            [InlineKeyboardButton("📸 𝗦𝗘𝗡𝗗 𝗣𝗔𝗬𝗠𝗘𝗡𝗧 𝗣𝗥𝗢𝗢𝗙", callback_data="send_payment_proof")],
+            [InlineKeyboardButton("🔙 𝗕𝗔𝗖𝗞", callback_data="recharge")]
+        ]
+        
+        await query.message.delete()
+        await query.message.reply_photo(
+            photo=UPI_QR_IMAGE_URL,
+            caption=text,
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    
+    elif data == "send_payment_proof":
+        amount = context.user_data.get("recharge_amount", 0)
+        text = f"""
+╔══════════════════════════╗
+║      📸 𝗣𝗔𝗬𝗠𝗘𝗡𝗧 𝗣𝗥𝗢𝗢𝗙      ║
+╚══════════════════════════╝
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+💰 *Amount:* ₹{amount}
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📝 *Please send one of the following:*
+
+1️⃣ *UTR Number* (12-digit transaction ID)
+   Example: `123456789012`
+
+2️⃣ *Payment Screenshot* (photo)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚠️ *Your request will be processed after verification*
+"""
+        await query.edit_message_text(text, parse_mode="Markdown")
+        context.user_data["awaiting_payment_proof"] = True
     
     # ========== PRODUCTS ==========
     elif data == "products":
@@ -460,7 +521,6 @@ Tap any category to view details
             await query.edit_message_text("✅ *No pending requests*", parse_mode="Markdown")
             return
         
-        # Delete the original menu message
         try:
             await query.delete_response()
         except:
@@ -474,7 +534,6 @@ Tap any category to view details
             proof_type = req.get('proof_type', 'unknown')
             req_time = req.get('timestamp', datetime.now())
             
-            # Create approve/reject buttons
             buttons = InlineKeyboardMarkup([
                 [
                     InlineKeyboardButton("✅ 𝗔𝗣𝗣𝗥𝗢𝗩𝗘", callback_data=f"approve_rech_{req['_id']}"),
@@ -524,26 +583,19 @@ Tap any category to view details
             amount = req.get('amount', 0)
             target_user_id = req.get('user_id')
             
-            # Add balance to user
             update_wallet(target_user_id, amount)
-            
-            # Update total recharge
             users_col.update_one(
                 {"user_id": target_user_id}, 
                 {"$inc": {"total_recharge": amount, "today_recharge": amount},
                  "$set": {"last_recharge_date": datetime.now().strftime("%Y-%m-%d")}}
             )
-            
-            # Update request status
             recharge_reqs_col.update_one({"_id": req_id}, {"$set": {"status": "approved", "processed_at": datetime.now()}})
             
-            # DELETE the request message from admin
             try:
                 await query.message.delete()
             except:
                 pass
             
-            # Stylish notification to admin
             await context.bot.send_message(ADMIN_ID, f"""
 ╔══════════════════════════╗
 ║      ✅ 𝗔𝗣𝗣𝗥𝗢𝗩𝗘𝗗 𝗦𝗨𝗖𝗖𝗘𝗦𝗦𝗙𝗨𝗟𝗟𝗬      ║
@@ -556,7 +608,6 @@ Tap any category to view details
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 """, parse_mode="Markdown")
             
-            # Stylish notification to user
             try:
                 new_balance = get_user(target_user_id)['wallet']
                 kb = InlineKeyboardMarkup()
@@ -601,13 +652,11 @@ Tap any category to view details
             
             recharge_reqs_col.update_one({"_id": req_id}, {"$set": {"status": "rejected", "processed_at": datetime.now()}})
             
-            # DELETE the request message from admin
             try:
                 await query.message.delete()
             except:
                 pass
             
-            # Stylish notification to admin
             await context.bot.send_message(ADMIN_ID, f"""
 ╔══════════════════════════╗
 ║      ❌ 𝗥𝗘𝗝𝗘𝗖𝗧𝗘𝗗      ║
@@ -619,7 +668,6 @@ Tap any category to view details
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 """, parse_mode="Markdown")
             
-            # Stylish notification to user
             try:
                 await context.bot.send_message(target_user_id, f"""
 ╔══════════════════════════╗
@@ -775,8 +823,8 @@ Tap any category to view details
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
-    if context.user_data.get("awaiting_transaction_id"):
-        context.user_data["awaiting_transaction_id"] = False
+    if context.user_data.get("awaiting_payment_proof"):
+        context.user_data["awaiting_payment_proof"] = False
         photo = update.message.photo[-1]
         file_id = photo.file_id
         amount = context.user_data.get("recharge_amount", 0)
@@ -795,7 +843,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text("✅ *Recharge request submitted!*\n\nAdmin will verify and approve shortly.", parse_mode="Markdown")
         
-        # Notify admin with buttons
         buttons = InlineKeyboardMarkup([
             [InlineKeyboardButton("✅ 𝗔𝗣𝗣𝗥𝗢𝗩𝗘", callback_data=f"approve_rech_{req_id}"),
              InlineKeyboardButton("❌ 𝗥𝗘𝗝𝗘𝗖𝗧", callback_data=f"reject_rech_{req_id}")]
@@ -821,42 +868,33 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text.strip()
     
-    # ========== WAITING FOR TRANSACTION ID ==========
-    if context.user_data.get("awaiting_transaction_id"):
-        context.user_data["awaiting_transaction_id"] = False
-        transaction_id = text
+    # ========== WAITING FOR PAYMENT PROOF (UTR) ==========
+    if context.user_data.get("awaiting_payment_proof"):
+        context.user_data["awaiting_payment_proof"] = False
+        utr_number = text
         amount = context.user_data.get("recharge_amount", 0)
         
-        # Check if it's an image URL
-        is_image = False
-        image_url = None
+        req_id = ObjectId()
+        recharge_reqs_col.insert_one({
+            "_id": req_id,
+            "user_id": user_id,
+            "amount": amount,
+            "screenshot_file_id": None,
+            "transaction_id": utr_number,
+            "proof_type": "utr",
+            "status": "pending",
+            "timestamp": datetime.now()
+        })
         
-        if text.startswith(('http://', 'https://')):
-            if is_valid_image_url(text):
-                is_image = True
-                image_url = text
+        await update.message.reply_text("✅ *Recharge request submitted!*\n\nAdmin will verify using your UTR number.\n\nPlease wait for approval.", parse_mode="Markdown")
         
-        if is_image:
-            req_id = ObjectId()
-            recharge_reqs_col.insert_one({
-                "_id": req_id,
-                "user_id": user_id,
-                "amount": amount,
-                "screenshot_file_id": image_url,
-                "transaction_id": "Image URL provided",
-                "proof_type": "image_url",
-                "status": "pending",
-                "timestamp": datetime.now()
-            })
-            await update.message.reply_text("✅ *Recharge request submitted with image!*\n\nAdmin will verify and approve shortly.", parse_mode="Markdown")
-            
-            buttons = InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ 𝗔𝗣𝗣𝗥𝗢𝗩𝗘", callback_data=f"approve_rech_{req_id}"),
-                 InlineKeyboardButton("❌ 𝗥𝗘𝗝𝗘𝗖𝗧", callback_data=f"reject_rech_{req_id}")]
-            ])
-            
-            for admin_id in ADMIN_IDS:
-                await context.bot.send_photo(admin_id, photo=image_url, caption=f"""
+        buttons = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ 𝗔𝗣𝗣𝗥𝗢𝗩𝗘", callback_data=f"approve_rech_{req_id}"),
+             InlineKeyboardButton("❌ 𝗥𝗘𝗝𝗘𝗖𝗧", callback_data=f"reject_rech_{req_id}")]
+        ])
+        
+        for admin_id in ADMIN_IDS:
+            await context.bot.send_message(admin_id, f"""
 ╔══════════════════════════╗
 ║      💰 𝗡𝗘𝗪 𝗥𝗘𝗖𝗛𝗔𝗥𝗚𝗘 𝗥𝗘𝗤𝗨𝗘𝗦𝗧      ║
 ╚══════════════════════════╝
@@ -864,38 +902,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 👤 *User:* `{user_id}`
 💵 *Amount:* ₹{amount}
-🖼️ *Payment Screenshot Attached*
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-""", parse_mode="Markdown", reply_markup=buttons)
-        else:
-            req_id = ObjectId()
-            recharge_reqs_col.insert_one({
-                "_id": req_id,
-                "user_id": user_id,
-                "amount": amount,
-                "screenshot_file_id": None,
-                "transaction_id": text,
-                "proof_type": "transaction_id",
-                "status": "pending",
-                "timestamp": datetime.now()
-            })
-            await update.message.reply_text("✅ *Recharge request submitted!*\n\nAdmin will verify using your Transaction ID.\n\nPlease wait for approval.", parse_mode="Markdown")
-            
-            buttons = InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ 𝗔𝗣𝗣𝗥𝗢𝗩𝗘", callback_data=f"approve_rech_{req_id}"),
-                 InlineKeyboardButton("❌ 𝗥𝗘𝗝𝗘𝗖𝗧", callback_data=f"reject_rech_{req_id}")]
-            ])
-            
-            for admin_id in ADMIN_IDS:
-                await context.bot.send_message(admin_id, f"""
-╔══════════════════════════╗
-║      💰 𝗡𝗘𝗪 𝗥𝗘𝗖𝗛𝗔𝗥𝗚𝗘 𝗥𝗘𝗤𝗨𝗘𝗦𝗧      ║
-╚══════════════════════════╝
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-👤 *User:* `{user_id}`
-💵 *Amount:* ₹{amount}
-🆔 *Transaction ID:* `{text}`
+🆔 *UTR Number:* `{utr_number}`
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 """, parse_mode="Markdown", reply_markup=buttons)
         
@@ -911,8 +918,42 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ Minimum amount is ₹10")
                 return
             context.user_data["recharge_amount"] = amount
-            await update.message.reply_text(f"💰 *Please send UPI Transaction ID or payment screenshot for ₹{amount}:*", parse_mode="Markdown")
-            context.user_data["awaiting_transaction_id"] = True
+            
+            text = f"""
+╔══════════════════════════╗
+║      💳 𝗣𝗔𝗬𝗠𝗘𝗡𝗧 𝗗𝗘𝗧𝗔𝗜𝗟𝗦      ║
+╚══════════════════════════╝
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+🏦 *UPI ID:* `{UPI_ID}`
+🆔 *Payee ID:* `{UPI_PAYEE_ID}`
+💰 *Amount:* ₹{amount}
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📱 *Payment Steps:*
+1️⃣ Scan QR code below
+2️⃣ Pay ₹{amount} to the UPI ID
+3️⃣ Note down the Transaction ID/UTR
+4️⃣ Send UTR number or screenshot
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+📸 *Scan QR code to pay*
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✅ *After payment, click below to send proof*
+"""
+            
+            keyboard = [
+                [InlineKeyboardButton("📸 𝗦𝗘𝗡𝗗 𝗣𝗔𝗬𝗠𝗘𝗡𝗧 𝗣𝗥𝗢𝗢𝗙", callback_data="send_payment_proof")],
+                [InlineKeyboardButton("🔙 𝗕𝗔𝗖𝗞", callback_data="recharge")]
+            ]
+            
+            await update.message.reply_photo(
+                photo=UPI_QR_IMAGE_URL,
+                caption=text,
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
         except:
             await update.message.reply_text("❌ Please send a valid number")
         return
