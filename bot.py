@@ -31,8 +31,8 @@ recharge_reqs_col = db["recharge_requests"]
 # Admin IDs
 ADMIN_IDS = [1847314753]
 
-# ---------- LOGGING ----------
-logging.basicConfig(format="%(asctime)s - %name)s - %(levelname)s - %(message)s", level=logging.INFO)
+# ---------- FIXED LOGGING ----------
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ---------- HELPER FUNCTIONS ----------
@@ -484,7 +484,7 @@ Tap any category to view details
                 else:
                     await query.message.reply_text(message, parse_mode="Markdown", reply_markup=buttons)
             except Exception as e:
-                logger.error(f"Error: {e}")
+                logger.error(f"Error sending pending request: {e}")
                 await query.message.reply_text(message, parse_mode="Markdown", reply_markup=buttons)
         
         await query.message.reply_text("✅ Use the buttons above to approve or reject each request", parse_mode="Markdown")
